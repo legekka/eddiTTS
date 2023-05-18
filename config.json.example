@@ -1,0 +1,54 @@
+{
+  "gui": true,
+  "whisper": {
+    "use": false,
+    "model": "base"
+  },
+  "hosts": {
+    "TTS_api": "http://192.168.1.40:4111/tts",
+    "TGW_api": "http://127.0.0.1:7860/run/textgen",
+    "TGWWS_api": "ws://127.0.0.1:7860/queue/join"
+  },
+  "sounddevice": {
+    "device": [1, 6]
+  },
+  "tts": {
+    "sid1": "22",
+    "sid2": "ganyu"
+  },
+  "params": {
+    "max_new_tokens": 200,
+    "do_sample": true,
+    "temperature": 0.7,
+    "top_p": 0.28,
+    "typical_p": 1,
+    "repetition_penalty": 1.18,
+    "encoder_repetition_penalty": 1.13,
+    "top_k": 40,
+    "min_length": 0,
+    "no_repeat_ngram_size": 0,
+    "num_beams": 1,
+    "penalty_alpha": 0,
+    "length_penalty": 1,
+    "early_stopping": false,
+    "seed": -1,
+    "add_bos_token": false,
+    "custom_stopping_strings": [],
+    "truncation_length": 2048,
+    "ban_eos_token": false
+  },
+  "openai_api_key": "xxxxx",
+  "prompts": {
+    "rephrase": {
+      "alpaca": "prompts/rephrase_alpaca.txt",
+      "openai": "prompts/rephrase_openai.txt"
+    },
+    "rephrase2": {
+      "alpaca": "prompts/rephrase2_alpaca.txt"
+    },
+    "ask": {
+      "alpaca": "prompts/ask_alpaca.txt",
+      "openai": "prompts/ask_openai.txt"
+    }
+  }
+}

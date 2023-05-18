@@ -1,0 +1,7 @@
+websockets
+asyncio
+sounddevice
+openai
+scipy
+PySide6
+numpy
