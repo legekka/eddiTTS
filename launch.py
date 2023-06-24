@@ -38,6 +38,15 @@ def load_config():
     with open(config["prompts"]["rephrase2"]["alpaca"], "r") as f:
         config["prompts"]["rephrase2"]["alpaca"] = f.read()
 
+    with open(config["prompts"]["ask"]["vicuna"], "r") as f:
+        config["prompts"]["ask"]["vicuna"] = f.read()
+
+    with open(config["prompts"]["rephrase"]["vicuna"], "r") as f:
+        config["prompts"]["rephrase"]["vicuna"] = f.read()
+
+    with open(config["prompts"]["rephrase2"]["vicuna"], "r") as f:
+        config["prompts"]["rephrase2"]["vicuna"] = f.read()
+
     with open(config["prompts"]["ask"]["openai"], "r") as f:
         config["prompts"]["ask"]["openai"] = f.read()
 
@@ -160,6 +169,16 @@ def splitAndPlaySentences(text, debug=False):
         if config["gui"]:
             gui.wait()
 
+def playSentences(text, debug=False):
+    # we don't split the text, just create the audio and play it
+    audio, sr = ttsapi.generate(text, play=False, debug=debug)
+    if config["gui"]:
+        gui.display_message(text, audioLength(audio, sr) + 2000)
+    print("Speaking: " + text)
+    ttsapi.just_play(audio, sr)
+    if config["gui"]:
+        gui.wait()
+    
 # loop of the checker and speaker
 def checkForChangesAndSpeak():
     global lineslength
@@ -182,11 +201,11 @@ def checkForChangesAndSpeak():
             start = time.time()
             text = lines[i]
             # get last 3 lines from the current line
-            logs = lines[i - 1 : i]
+            logs = lines[i - 3 : i]
             # strip the lines
             logs = [log.strip() for log in logs]
-            text = TGWapi(config).rephrase2(eddi_message=lines[i], logs=logs, debug=True, max_new_tokens=150)
-            #text = TGWapi(config).rephrase(text, debug=True, max_new_tokens=150)
+            #text = TGWapi(config).rephrase2(eddi_message=lines[i], logs=logs, debug=True, max_new_tokens=150)
+            text = TGWapi(config).rephrase(text, debug=True, max_new_tokens=150)
             logText(text, role="assistant")
             splitAndPlaySentences(text, debug=True)
             print("Total time: " + str(round(time.time() - start, 2)) + "s")
@@ -202,7 +221,7 @@ def checkForKeypress():
         )
         logText(question, role="user")
         logText(answer, role="assistant")
-        splitAndPlaySentences(answer, debug=True)
+        playSentences(answer, debug=True)
 
     if config["whisper"]["use"]:
         if keyboard.is_pressed("ctrl+y"):
@@ -222,7 +241,7 @@ def checkForKeypress():
             )
             logText(question, role="user")
             logText(answer, role="assistant")
-            ttsapi.splitAndPlaySentences(answer, debug=True)
+            playSentences(answer, debug=True)
 
 
 def init_gui():

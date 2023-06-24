@@ -4,7 +4,7 @@ import sounddevice as sd
 class AudioPlayer(object):
     def __init__(self, config):
         super().__init__()
-        sd.default.device = config["sounddevice"]["device"]
+        #sd.default.device = config["sounddevice"]["device"]
 
     def play(self, audio, sr):
         sd.play(audio, sr)

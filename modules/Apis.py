@@ -21,8 +21,8 @@ class TGWapi(object):
         super().__init__()
         self.ws_url = config["hosts"]["TGWWS_api"]
         self.api_url = config["hosts"]["TGW_api"]
-        self.rephrase_prompt = config["prompts"]["rephrase"]["alpaca"]
-        self.rephrase2_prompt = config["prompts"]["rephrase2"]["alpaca"]
+        self.rephrase_prompt = config["prompts"]["rephrase"]["vicuna"]
+        self.rephrase2_prompt = config["prompts"]["rephrase2"]["vicuna"]
         self.ask_prompt = config["prompts"]["ask"]["alpaca"]
         self.params = config["params"]
 
@@ -82,10 +82,16 @@ class TGWapi(object):
         return asyncio.run(self.generate_stream(text, params))
 
     def generate(self, text, params=None):
-        form_data = self.create_form_data(text, params)
-        response = requests.post(self.api_url, json=form_data)
-        cleaned_text = response.json()["data"][0]
+        request = {
+            'prompt': text,
+            'max_new_tokens': params['max_new_tokens'],
+            'preset': 'simple-1'
+        }
+        
+        response = requests.post(self.api_url, json=request)
+        cleaned_text = response.json()["results"][0]["text"]
         cleaned_text = cleaned_text.replace(text, "")
+        cleaned_text = cleaned_text.encode('ascii', 'ignore').decode('ascii')
         return cleaned_text
 
     def rephrase2(
@@ -275,9 +281,10 @@ class TGWapi(object):
             "ban_eos_token": ban_eos_token or self.params["ban_eos_token"],
         }
 
+        # make role uppercase
         context_messages = list(
             map(
-                lambda message: f'{message["role"]}: "{message["text"]}"',
+                lambda message: f'{message["role"].upper()}: "{message["text"]}"',
                 context_messages,
             )
         )

@@ -3,3 +3,4 @@ data/messages.json
 datasetmaker.py
 dataset/*
 test_gui.py
+tmp/*
