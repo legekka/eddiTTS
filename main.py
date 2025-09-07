@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional
 from modules.llmbackend import LlmBackend
-from modules.TTSClient import VibeVoiceTTSClient
+from modules.SimpleTTSClient import SimpleTTSClient
 from modules.AudioPlayer import AudioPlayer
 from modules.AudioEffects import AudioEffects
 
@@ -35,11 +35,8 @@ class EddiTTSProcessor:
         self.tts_client = None
         if self.config.get("tts", {}).get("enabled", False):
             try:
-                self.tts_client = VibeVoiceTTSClient(
-                    base_url=self.config["tts"].get("base_url", "http://172.16.240.5:8500"),
-                    timeout=self.config["tts"].get("timeout", 30)
-                )
-                print(f"TTS Client initialized: {self.tts_client.base_url}")
+                self.tts_client = SimpleTTSClient(self.config)
+                print(f"TTS Client initialized: {self.tts_client.api_url}")
             except Exception as e:
                 print(f"TTS Client initialization failed: {e}")
                 print("Continuing without TTS...")
@@ -59,11 +56,12 @@ class EddiTTSProcessor:
         # Initialize Audio Effects processor
         self.audio_effects = None
         try:
-            self.audio_effects = AudioEffects(self.config)
+            self.audio_effects = AudioEffects(self.config, config_path)
             effects_info = self.audio_effects.get_effects_info()
             if effects_info["enabled"]:
                 tail_time = effects_info.get("tail_time", 0.0)
                 print(f"Audio Effects initialized: {effects_info['effects_count']} effect(s) active, {tail_time:.2f}s tail time")
+                print(f"🔄 Dynamic config reloading enabled - edit config.json to adjust effects in real-time")
             else:
                 print("Audio Effects: Disabled")
         except Exception as e:
@@ -274,35 +272,28 @@ class EddiTTSProcessor:
         
         try:
             # Get TTS configuration
-            tts_config = self.config.get("tts", {})
-            voice = tts_config.get("voice", "en-Alice_woman")
-            cfg_scale = tts_config.get("cfg_scale", 1.3)
-            
+            # SimpleTTSClient doesn't need voice/cfg_scale parameters
             print(f"🔊 TTS generation: ", end="", flush=True)
             start_time = time.time()
             
-            # Generate TTS audio
-            response = self.tts_client.generate_speech(
-                text=text,
-                voice=voice,
-                cfg_scale=cfg_scale
-            )
+            # Generate TTS audio (SimpleTTSClient returns bytes directly)
+            audio_data = self.tts_client.generate_speech(text)
             
             tts_time = time.time() - start_time
             
-            if response.status == "completed" and response.audio_data:
+            if audio_data:
                 # Optionally save audio file for debugging
                 if message_id:
                     audio_filename = f"tmp/tts_{message_id}.wav"
                     os.makedirs("tmp", exist_ok=True)
-                    self.tts_client.save_audio_to_file(response.audio_data, audio_filename)
+                    self.tts_client.save_audio_to_file(audio_data, audio_filename)
                 
-                audio_size_kb = len(response.audio_data) / 1024
+                audio_size_kb = len(audio_data) / 1024
                 print(f"{tts_time:.2f}s ({audio_size_kb:.1f}KB)")
                 
-                return response.audio_data
+                return audio_data
             else:
-                print(f"failed ({response.error_message})")
+                print(f"failed (no audio data returned)")
                 return None
                 
         except Exception as e:

@@ -3,20 +3,35 @@ import wave
 import math
 import numpy as np
 from typing import Dict, Any, Optional
-from pedalboard import Pedalboard, Chorus, Delay, Reverb, Distortion
+from pedalboard import Pedalboard, Chorus, Delay, Reverb, Distortion, Gain, HighpassFilter, LowpassFilter, Compressor, Phaser
 import logging
 
 
 class AudioEffects:
     """Audio effects processor using pedalboard for real-time audio enhancement"""
     
-    def __init__(self, config: Dict[str, Any] = None):
+    def __init__(self, config: Dict[str, Any] = None, config_path: str = "config.json"):
         """Initialize audio effects processor
         
         Args:
-            config: Configuration dictionary with effects settings
+            config: Configuration dictionary with effects settings (optional)
+            config_path: Path to config file for dynamic reloading
         """
-        self.config = config or {}
+        self.config_path = config_path
+        
+        # Load config from file if not provided
+        if config is None:
+            try:
+                import json
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    self.config = json.load(f)
+            except (FileNotFoundError, json.JSONDecodeError) as e:
+                self.logger = logging.getLogger(__name__)
+                self.logger.warning(f"Could not load config from {config_path}: {e}")
+                self.config = {}
+        else:
+            self.config = config
+            
         self.effects_config = self.config.get("audio_effects", {})
         self.enabled = self.effects_config.get("enabled", False)
         self.logger = logging.getLogger(__name__)
@@ -25,29 +40,101 @@ class AudioEffects:
         self.pedalboard = self._create_pedalboard()
         
         if self.enabled:
-            self.logger.info("Audio effects initialized")
+            self.logger.info("Audio effects initialized with dynamic config reloading")
             self._log_effects_config()
         else:
             self.logger.info("Audio effects disabled")
     
+    def _reload_config(self) -> bool:
+        """Reload configuration from file and update effects
+        
+        Returns:
+            True if config was successfully reloaded, False otherwise
+        """
+        try:
+            import json
+            with open(self.config_path, 'r', encoding='utf-8') as f:
+                new_config = json.load(f)
+            
+            new_effects_config = new_config.get("audio_effects", {})
+            new_enabled = new_effects_config.get("enabled", False)
+            
+            # Check if effects configuration has changed
+            if (new_effects_config != self.effects_config or 
+                new_enabled != self.enabled):
+                
+                # Update configuration
+                self.config = new_config
+                self.effects_config = new_effects_config
+                self.enabled = new_enabled
+                
+                # Rebuild pedalboard with new settings
+                old_effects_count = len(self.pedalboard)
+                self.pedalboard = self._create_pedalboard()
+                new_effects_count = len(self.pedalboard)
+                
+                self.logger.debug(f"Config reloaded: {old_effects_count}→{new_effects_count} effects, enabled={self.enabled}")
+                return True
+            
+            return False  # No changes
+            
+        except Exception as e:
+            self.logger.warning(f"Failed to reload config from {self.config_path}: {e}")
+            return False
+    
     def _create_pedalboard(self) -> Pedalboard:
-        """Create pedalboard with configured effects"""
+        """Create pedalboard with configured effects in COVAS-optimized order"""
         board = Pedalboard()
         
         if not self.enabled:
             return board
         
-        # Add effects in order: Distortion -> Chorus -> Delay -> Reverb
-        # This order provides the most natural sound progression
+        # COVAS Effect Chain Order (based on Elite Dangerous research):
+        # 1. EQ/Filtering -> 2. Compression -> 3. Distortion -> 4. Modulation -> 5. Time-based
         
-        # 1. Distortion (applied first for warmth/character)
+        # 1. High-pass filter (remove unwanted low frequencies <200Hz)
+        if self.effects_config.get("highpass", {}).get("enabled", False):
+            hp_config = self.effects_config["highpass"]
+            board.append(HighpassFilter(
+                cutoff_frequency_hz=hp_config.get("cutoff_hz", 200.0)
+            ))
+        
+        # 2. Low-pass filter (constrain bandwidth for comm-device sound)
+        if self.effects_config.get("lowpass", {}).get("enabled", False):
+            lp_config = self.effects_config["lowpass"]
+            board.append(LowpassFilter(
+                cutoff_frequency_hz=lp_config.get("cutoff_hz", 3000.0)
+            ))
+        
+        # 3. Compression (flatten dynamics for consistent AI voice level)
+        if self.effects_config.get("compression", {}).get("enabled", False):
+            comp_config = self.effects_config["compression"]
+            board.append(Compressor(
+                threshold_db=comp_config.get("threshold_db", -20.0),
+                ratio=comp_config.get("ratio", 4.0),
+                attack_ms=comp_config.get("attack_ms", 5.0),
+                release_ms=comp_config.get("release_ms", 100.0)
+            ))
+        
+        # 4. Distortion (subtle saturation for digital/electronic character)
         if self.effects_config.get("distortion", {}).get("enabled", False):
             distortion_config = self.effects_config["distortion"]
             board.append(Distortion(
-                drive_db=distortion_config.get("drive_db", 10.0),
+                drive_db=distortion_config.get("drive_db", 5.0),  # Subtle for COVAS
             ))
         
-        # 2. Chorus (modulation effects)
+        # 5. Phaser (subtle tonal modulation for electronic feel)
+        if self.effects_config.get("phaser", {}).get("enabled", False):
+            phaser_config = self.effects_config["phaser"]
+            board.append(Phaser(
+                rate_hz=phaser_config.get("rate_hz", 0.5),
+                depth=phaser_config.get("depth", 0.1),
+                centre_frequency_hz=phaser_config.get("centre_frequency_hz", 1300.0),
+                feedback=phaser_config.get("feedback", 0.1),
+                mix=phaser_config.get("mix", 0.1)  # Very subtle
+            ))
+        
+        # 6. Chorus (doubling effect for AI voice character)
         if self.effects_config.get("chorus", {}).get("enabled", False):
             chorus_config = self.effects_config["chorus"]
             board.append(Chorus(
@@ -55,27 +142,27 @@ class AudioEffects:
                 depth=chorus_config.get("depth", 0.25),
                 centre_delay_ms=chorus_config.get("centre_delay_ms", 7.0),
                 feedback=chorus_config.get("feedback", 0.0),
-                mix=chorus_config.get("mix", 0.5)
+                mix=chorus_config.get("mix", 0.4)  # 40% wet for COVAS doubling
             ))
         
-        # 3. Delay (echo effects)
+        # 7. Delay (minimal for COVAS - more for special effects)
         if self.effects_config.get("delay", {}).get("enabled", False):
             delay_config = self.effects_config["delay"]
             board.append(Delay(
-                delay_seconds=delay_config.get("delay_seconds", 0.25),
-                feedback=delay_config.get("feedback", 0.3),
-                mix=delay_config.get("mix", 0.2)
+                delay_seconds=delay_config.get("delay_seconds", 0.05),  # Short slapback
+                feedback=delay_config.get("feedback", 0.1),  # Minimal feedback
+                mix=delay_config.get("mix", 0.1)  # Very low mix
             ))
         
-        # 4. Reverb (spatial effects, applied last)
+        # 8. Reverb (small cockpit/helmet ambience, applied last)
         if self.effects_config.get("reverb", {}).get("enabled", False):
             reverb_config = self.effects_config["reverb"]
             board.append(Reverb(
-                room_size=reverb_config.get("room_size", 0.5),
-                damping=reverb_config.get("damping", 0.5),
-                wet_level=reverb_config.get("wet_level", 0.3),
-                dry_level=reverb_config.get("dry_level", 0.8),
-                width=reverb_config.get("width", 1.0),
+                room_size=reverb_config.get("room_size", 0.3),  # Small space
+                damping=reverb_config.get("damping", 0.7),  # Controlled decay
+                wet_level=reverb_config.get("wet_level", 0.15),  # 15% wet for subtlety
+                dry_level=reverb_config.get("dry_level", 0.85),  # Keep voice clear
+                width=reverb_config.get("width", 0.8),
                 freeze_mode=reverb_config.get("freeze_mode", 0.0)
             ))
         
@@ -85,9 +172,22 @@ class AudioEffects:
         """Log the current effects configuration"""
         active_effects = []
         
-        for effect_name in ["distortion", "chorus", "delay", "reverb"]:
+        # Check for stereo width first
+        if self.effects_config.get("stereo_width", {}).get("enabled", False):
+            active_effects.append("Stereo Width")
+        
+        # Check all effects in processing order
+        effect_names = ["highpass", "lowpass", "compression", "distortion", "phaser", "chorus", "delay", "reverb"]
+        for effect_name in effect_names:
             if self.effects_config.get(effect_name, {}).get("enabled", False):
-                active_effects.append(effect_name.capitalize())
+                display_name = effect_name.replace("_", " ").title()
+                if effect_name == "compression":
+                    display_name = "Compressor"
+                elif effect_name == "highpass":
+                    display_name = "High-pass"
+                elif effect_name == "lowpass":
+                    display_name = "Low-pass"
+                active_effects.append(display_name)
         
         if active_effects:
             self.logger.info(f"Active effects: {', '.join(active_effects)}")
@@ -146,6 +246,78 @@ class AudioEffects:
         
         return tail_time
     
+    def _enhance_stereo_width(self, audio_array: np.ndarray, sample_rate: int) -> np.ndarray:
+        """Enhance stereo width for mono TTS audio
+        
+        Args:
+            audio_array: Input audio array (mono or stereo)
+            sample_rate: Audio sample rate
+            
+        Returns:
+            Enhanced stereo audio array
+        """
+        stereo_config = self.effects_config.get("stereo_width", {})
+        if not stereo_config.get("enabled", False):
+            return audio_array
+        
+        # Get stereo parameters
+        width = stereo_config.get("width", 1.0)  # 0.0=mono, 1.0=normal, 2.0=wide
+        pan = stereo_config.get("pan", 0.0)  # -1.0=left, 0.0=center, 1.0=right
+        haas_delay_ms = stereo_config.get("haas_delay_ms", 0.0)  # Haas effect delay
+        
+        # Convert mono to stereo if needed
+        if len(audio_array.shape) == 1 or audio_array.shape[0] == 1:
+            # Mono input - create stereo
+            if len(audio_array.shape) == 1:
+                mono_signal = audio_array
+            else:
+                mono_signal = audio_array[0]
+            
+            # Create stereo from mono
+            left_channel = mono_signal.copy()
+            right_channel = mono_signal.copy()
+            
+            # Apply Haas effect (psychoacoustic stereo widening)
+            if haas_delay_ms > 0:
+                delay_samples = int((haas_delay_ms / 1000.0) * sample_rate)
+                if delay_samples > 0:
+                    # Delay right channel slightly
+                    delayed_right = np.zeros(len(right_channel) + delay_samples)
+                    delayed_right[delay_samples:] = right_channel
+                    right_channel = delayed_right[:len(left_channel)]
+            
+            # Apply panning
+            if pan != 0.0:
+                # Pan law: constant power panning
+                pan_angle = (pan + 1.0) * math.pi / 4.0  # Convert -1,1 to 0,π/2
+                left_gain = math.cos(pan_angle)
+                right_gain = math.sin(pan_angle)
+                left_channel *= left_gain
+                right_channel *= right_gain
+            
+            # Combine into stereo array
+            stereo_array = np.array([left_channel, right_channel])
+        else:
+            # Already stereo
+            stereo_array = audio_array
+        
+        # Apply stereo width enhancement
+        if width != 1.0:
+            left, right = stereo_array[0], stereo_array[1]
+            
+            # Mid/Side processing for width control
+            mid = (left + right) * 0.5  # Center information
+            side = (left - right) * 0.5  # Stereo information
+            
+            # Adjust side signal for width
+            side *= width
+            
+            # Convert back to L/R
+            stereo_array[0] = mid + side  # Left
+            stereo_array[1] = mid - side  # Right
+        
+        return stereo_array
+    
     def _add_silence_padding(self, audio_array: np.ndarray, sample_rate: int, tail_time: float) -> np.ndarray:
         """Add silence padding to the end of audio for effect tails
         
@@ -182,6 +354,11 @@ class AudioEffects:
         Returns:
             Processed audio data as bytes
         """
+        # Reload configuration before processing (for real-time tweaking)
+        config_changed = self._reload_config()
+        if config_changed:
+            self.logger.info(f"🎵 Config reloaded - effects updated")
+        
         if not self.enabled or len(self.pedalboard) == 0:
             # No effects enabled, return original audio
             return audio_data
@@ -227,6 +404,13 @@ class AudioEffects:
                 if tail_time > 0:
                     self.logger.debug(f"Adding {tail_time:.2f}s tail for effects")
                     audio_array = self._add_silence_padding(audio_array, sample_rate, tail_time)
+                
+                # Apply stereo width enhancement (before other effects for better spatial processing)
+                audio_array = self._enhance_stereo_width(audio_array, sample_rate)
+                
+                # Update channel count if stereo conversion happened
+                if len(audio_array.shape) > 1 and audio_array.shape[0] == 2:
+                    num_channels = 2
                 
                 # Apply effects
                 original_samples = num_frames
@@ -278,9 +462,14 @@ class AudioEffects:
         
         tail_time = self._calculate_tail_time()
         
+        # Count all effects including stereo width
+        total_effects = len(self.pedalboard)
+        if self.effects_config.get("stereo_width", {}).get("enabled", False):
+            total_effects += 1
+        
         return {
             "enabled": True,
-            "effects_count": len(self.pedalboard),
+            "effects_count": total_effects,
             "effects": effects_info,
             "tail_time": tail_time
         }
