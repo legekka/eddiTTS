@@ -7,6 +7,7 @@ from typing import Dict, List, Optional
 from modules.llmbackend import LlmBackend
 from modules.TTSClient import VibeVoiceTTSClient
 from modules.AudioPlayer import AudioPlayer
+from modules.AudioEffects import AudioEffects
 
 
 class EddiTTSProcessor:
@@ -55,6 +56,21 @@ class EddiTTSProcessor:
                 print("TTS audio will be saved but not played...")
                 self.audio_player = None
         
+        # Initialize Audio Effects processor
+        self.audio_effects = None
+        try:
+            self.audio_effects = AudioEffects(self.config)
+            effects_info = self.audio_effects.get_effects_info()
+            if effects_info["enabled"]:
+                tail_time = effects_info.get("tail_time", 0.0)
+                print(f"Audio Effects initialized: {effects_info['effects_count']} effect(s) active, {tail_time:.2f}s tail time")
+            else:
+                print("Audio Effects: Disabled")
+        except Exception as e:
+            print(f"Audio Effects initialization failed: {e}")
+            print("Continuing without audio effects...")
+            self.audio_effects = None
+        
         # Load system prompt
         self.system_prompt = self.load_system_prompt()
         
@@ -77,6 +93,12 @@ class EddiTTSProcessor:
             if self.audio_player:
                 device_name = self.audio_player.default_device['name'] if self.audio_player.default_device else 'Unknown'
                 print(f"Audio: Enabled ({device_name})")
+                if self.audio_effects and self.audio_effects.enabled:
+                    effects_info = self.audio_effects.get_effects_info()
+                    active_effects = [effect["type"] for effect in effects_info["effects"]]
+                    print(f"Audio Effects: Enabled ({', '.join(active_effects)})")
+                else:
+                    print(f"Audio Effects: Disabled")
             else:
                 print(f"Audio: Disabled (TTS files will be saved only)")
         else:
@@ -323,6 +345,14 @@ class EddiTTSProcessor:
                         audio_data = None
                         if self.tts_client:
                             audio_data = self.generate_tts_audio(rephrased_text, message_id)
+                            
+                            # Apply audio effects if enabled
+                            if audio_data and self.audio_effects and self.audio_effects.enabled:
+                                print(f"🎵 [{message_id}] Applying audio effects...", end="", flush=True)
+                                effects_start_time = time.time()
+                                audio_data = self.audio_effects.process_audio(audio_data)
+                                effects_time = time.time() - effects_start_time
+                                print(f" {effects_time:.3f}s")
                         
                         # Coordinate audio playback with GUI display
                         if audio_data and self.audio_player and self.gui:
@@ -392,6 +422,10 @@ class EddiTTSProcessor:
             print("💡 GUI is active - messages will be displayed on screen")
         if self.tts_client:
             print("🔊 TTS is active - audio files will be generated")
+            if self.audio_effects and self.audio_effects.enabled:
+                effects_info = self.audio_effects.get_effects_info()
+                active_effects = [effect["type"] for effect in effects_info["effects"]]
+                print(f"🎵 Audio effects are active: {', '.join(active_effects)}")
         print("")
         
         try:

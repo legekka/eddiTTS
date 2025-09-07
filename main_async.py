@@ -11,6 +11,7 @@ import threading
 from modules.llmbackend import LlmBackend
 from modules.TTSClient import VibeVoiceTTSClient
 from modules.AudioPlayer import AudioPlayer
+from modules.AudioEffects import AudioEffects
 
 
 @dataclass
@@ -91,6 +92,21 @@ class EddiTTSProcessorAsync:
                 print("TTS audio will be saved but not played...")
                 self.audio_player = None
         
+        # Initialize Audio Effects processor
+        self.audio_effects = None
+        try:
+            self.audio_effects = AudioEffects(self.config)
+            effects_info = self.audio_effects.get_effects_info()
+            if effects_info["enabled"]:
+                tail_time = effects_info.get("tail_time", 0.0)
+                print(f"Audio Effects initialized: {effects_info['effects_count']} effect(s) active, {tail_time:.2f}s tail time")
+            else:
+                print("Audio Effects: Disabled")
+        except Exception as e:
+            print(f"Audio Effects initialization failed: {e}")
+            print("Continuing without audio effects...")
+            self.audio_effects = None
+        
         # Load system prompt
         self.system_prompt = self.load_system_prompt()
         
@@ -113,6 +129,12 @@ class EddiTTSProcessorAsync:
             if self.audio_player:
                 device_name = self.audio_player.default_device['name'] if self.audio_player.default_device else 'Unknown'
                 print(f"Audio: Enabled ({device_name})")
+                if self.audio_effects and self.audio_effects.enabled:
+                    effects_info = self.audio_effects.get_effects_info()
+                    active_effects = [effect["type"] for effect in effects_info["effects"]]
+                    print(f"Audio Effects: Enabled ({', '.join(active_effects)})")
+                else:
+                    print(f"Audio Effects: Disabled")
             else:
                 print(f"Audio: Disabled (TTS files will be saved only)")
         else:
@@ -450,12 +472,20 @@ class EddiTTSProcessorAsync:
                         message.audio_data = response.audio_data
                         message.status = "tts_complete"
                         
+                        # Apply audio effects if enabled
+                        if self.audio_effects and self.audio_effects.enabled:
+                            print(f"🎵 [{message.id}] Applying audio effects...", end="", flush=True)
+                            effects_start_time = time.time()
+                            message.audio_data = self.audio_effects.process_audio(message.audio_data)
+                            effects_time = time.time() - effects_start_time
+                            print(f" {effects_time:.3f}s")
+                        
                         # Optionally save audio file for debugging
                         audio_filename = f"tmp/tts_{message.id}.wav"
                         os.makedirs("tmp", exist_ok=True)
-                        self.tts_client.save_audio_to_file(response.audio_data, audio_filename)
+                        self.tts_client.save_audio_to_file(message.audio_data, audio_filename)
                         
-                        audio_size_kb = len(response.audio_data) / 1024
+                        audio_size_kb = len(message.audio_data) / 1024
                         print(f"🔊 [{message.id}] TTS completed in {tts_time:.2f}s - {audio_size_kb:.1f}KB")
                         
                         # Add to audio playback queue
@@ -534,6 +564,11 @@ class EddiTTSProcessorAsync:
         if self.gui:
             print("💡 GUI is active - messages will be displayed on screen")
             print("🖥️ GUI processing runs in main thread for Qt compatibility")
+        if self.tts_client:
+            if self.audio_effects and self.audio_effects.enabled:
+                effects_info = self.audio_effects.get_effects_info()
+                active_effects = [effect["type"] for effect in effects_info["effects"]]
+                print(f"🎵 Audio effects are active: {', '.join(active_effects)}")
         print("")
         
         try:
