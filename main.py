@@ -1,0 +1,242 @@
+import os
+import time
+import json
+from pathlib import Path
+from typing import Dict, List, Optional
+from modules.llmbackend import LlmBackend
+
+
+class EddiTTSProcessor:
+    """Main processor for monitoring EDDI files and rephrasing content"""
+    
+    def __init__(self, config_path: str = "config.json"):
+        """Initialize the processor with configuration"""
+        self.config = self.load_config(config_path)
+        self.messages: List[Dict] = []
+        self.lines_processed = 0
+        
+        # Initialize LLM backend
+        self.llm_backend = LlmBackend(
+            base_url=self.config.get("llm_backend", {}).get("base_url", "http://localhost:11434/v1"),
+            api_key=self.config.get("llm_backend", {}).get("api_key", "valami")
+        )
+        
+        # Load system prompt
+        self.system_prompt = self.load_system_prompt()
+        
+        # Set up speechresponder file path
+        self.speechresponder_path = os.path.join(
+            os.getenv("APPDATA", ""), "EDDI", "speechresponder.out"
+        )
+        
+        # Load existing messages
+        self.load_messages()
+        
+        print(f"EddiTTS Processor initialized")
+        print(f"Monitoring: {self.speechresponder_path}")
+        print(f"LLM Backend: {self.llm_backend.base_url}")
+        print(f"Available models: {', '.join(self.llm_backend.list_models())}")
+        print("-" * 50)
+    
+    def load_config(self, config_path: str) -> Dict:
+        """Load configuration from JSON file"""
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+            
+            # Add default LLM backend config if not present
+            if "llm_backend" not in config:
+                config["llm_backend"] = {
+                    "base_url": "http://localhost:11434/v1",
+                    "api_key": "valami",
+                    "model": "gpt-oss:20b",
+                    "context_messages": 5
+                }
+            
+            return config
+        except FileNotFoundError:
+            print(f"Config file {config_path} not found. Using default configuration.")
+            return {
+                "llm_backend": {
+                    "base_url": "http://localhost:11434/v1",
+                    "api_key": "valami",
+                    "model": "gpt-oss:20b",
+                    "context_messages": 5
+                }
+            }
+        except json.JSONDecodeError as e:
+            print(f"Error parsing config file: {e}")
+            raise
+    
+    def load_system_prompt(self) -> str:
+        """Load the system prompt for rephrasing"""
+        prompt_path = "prompts/rephrase_openai.txt"
+        try:
+            with open(prompt_path, 'r', encoding='utf-8') as f:
+                return f.read().strip()
+        except FileNotFoundError:
+            print(f"Warning: Prompt file {prompt_path} not found. Using default prompt.")
+            return ("You are a helpful AI assistant that rephrases system messages "
+                   "to be more natural and conversational while maintaining their meaning.")
+    
+    def load_messages(self) -> None:
+        """Load existing messages from JSON file"""
+        messages_path = "data/messages.json"
+        try:
+            with open(messages_path, 'r', encoding='utf-8') as f:
+                self.messages = json.load(f)
+            print(f"Loaded {len(self.messages)} existing messages")
+        except FileNotFoundError:
+            print("No existing messages file found. Starting fresh.")
+            self.messages = []
+            # Create data directory if it doesn't exist
+            os.makedirs("data", exist_ok=True)
+        except json.JSONDecodeError as e:
+            print(f"Error parsing messages file: {e}")
+            print("Starting with empty messages list.")
+            self.messages = []
+    
+    def save_messages(self) -> None:
+        """Save messages to JSON file"""
+        messages_path = "data/messages.json"
+        try:
+            with open(messages_path, 'w', encoding='utf-8') as f:
+                json.dump(self.messages, f, indent=4, ensure_ascii=False)
+        except Exception as e:
+            print(f"Error saving messages: {e}")
+    
+    def log_message(self, text: str, role: str = "assistant") -> None:
+        """Log a message to the messages list and save to file"""
+        message = {
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime()),
+            "role": role,
+            "text": text.strip()
+        }
+        self.messages.append(message)
+        self.save_messages()
+    
+    def rephrase_text(self, text: str) -> str:
+        """Rephrase text using the LLM backend with conversation history"""
+        try:
+            # Start with system prompt
+            messages = [
+                {"role": "system", "content": self.system_prompt}
+            ]
+            
+            # Add previous conversation history if configured and available
+            context_count = self.config["llm_backend"].get("context_messages", 5)
+            if context_count > 0 and self.messages:
+                # Get the last N messages as context
+                recent_messages = self.messages[-context_count:]
+                for msg in recent_messages:
+                    # Add previous messages as assistant messages to provide context
+                    messages.append({
+                        "role": "assistant", 
+                        "content": msg["text"]
+                    })
+                print(f"Using {len(recent_messages)} previous messages as context")
+            
+            # Add the current message to rephrase
+            messages.append({"role": "user", "content": text})
+            
+            # Get model from config
+            model = self.config["llm_backend"].get("model", "gpt-oss:20b")
+            
+            # Check if model exists
+            available_models = self.llm_backend.list_models()
+            if model not in available_models:
+                print(f"Warning: Model '{model}' not available. Using first available model.")
+                model = available_models[0] if available_models else "default"
+            
+            print(f"LLM API time: ", end="", flush=True)
+            start_time = time.time()
+            
+            response = self.llm_backend.chat(
+                messages=messages,
+                model=model,
+                reasoning_effort=None
+            )
+            
+            api_time = time.time() - start_time
+            print(f"{api_time:.2f}s")
+            
+            rephrased = response.choices[0].message.content.strip()
+            return rephrased
+            
+        except Exception as e:
+            print(f"Error rephrasing text: {e}")
+            print("Using original text.")
+            return text
+    
+    def check_for_new_lines(self) -> None:
+        """Check for new lines in the speechresponder.out file"""
+        try:
+            if not os.path.exists(self.speechresponder_path):
+                return
+            
+            with open(self.speechresponder_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+            
+            # Initialize line count on first run
+            if self.lines_processed == 0:
+                self.lines_processed = len(lines)
+                print(f"Initialized with {self.lines_processed} existing lines")
+                return
+            
+            # Process new lines
+            if len(lines) > self.lines_processed:
+                new_lines_count = len(lines) - self.lines_processed
+                print(f"\\n🔍 {new_lines_count} new line(s) detected")
+                
+                for i in range(self.lines_processed, len(lines)):
+                    original_text = lines[i].strip()
+                    if original_text:  # Skip empty lines
+                        print(f"\\n📤 Original: {original_text}")
+                        
+                        start_time = time.time()
+                        rephrased_text = self.rephrase_text(original_text)
+                        total_time = time.time() - start_time
+                        
+                        print(f"✨ Rephrased: {rephrased_text}")
+                        print(f"⏱️ Total time: {total_time:.2f}s")
+                        
+                        # Log the rephrased message
+                        self.log_message(rephrased_text, "assistant")
+                
+                self.lines_processed = len(lines)
+                print("-" * 50)
+                
+        except Exception as e:
+            print(f"Error reading speechresponder file: {e}")
+    
+    def run(self) -> None:
+        """Main processing loop"""
+        print("🚀 Starting EddiTTS processor...")
+        print("Press Ctrl+C to stop")
+        print("")
+        
+        try:
+            while True:
+                self.check_for_new_lines()
+                time.sleep(0.5)  # Check every 500ms
+                
+        except KeyboardInterrupt:
+            print("\\n\\n🛑 Stopping EddiTTS processor...")
+            print(f"Total messages processed: {len(self.messages)}")
+            print("Goodbye, Commander! o7")
+
+
+def main():
+    """Main entry point"""
+    try:
+        processor = EddiTTSProcessor()
+        processor.run()
+    except Exception as e:
+        print(f"Fatal error: {e}")
+        return 1
+    
+    return 0
+
+
+if __name__ == "__main__":
+    exit(main())

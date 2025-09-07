@@ -4,3 +4,4 @@ datasetmaker.py
 dataset/*
 test_gui.py
 tmp/*
+*.pyc
