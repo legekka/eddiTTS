@@ -12,6 +12,7 @@ from PySide6.QtGui import QFontDatabase
 class ImprovedGui(QWidget):
     def __init__(self):
         super().__init__()
+        self.loop = None  # Initialize loop attribute
         self.init_ui()
 
     def init_ui(self):
@@ -189,7 +190,11 @@ class ImprovedGui(QWidget):
 
     def wait(self):
         """Wait for all animations to complete"""
-        self.loop.exec()
+        if self.loop is not None:
+            self.loop.exec()
+        else:
+            # No active animation loop, nothing to wait for
+            pass
 
     def sleep(self, duration):  # duration in milliseconds
         """Non-blocking sleep for event loop"""

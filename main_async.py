@@ -10,6 +10,7 @@ import queue
 import threading
 from modules.llmbackend import LlmBackend
 from modules.TTSClient import VibeVoiceTTSClient
+from modules.AudioPlayer import AudioPlayer
 
 
 @dataclass
@@ -18,8 +19,9 @@ class Message:
     id: str
     original_text: str
     rephrased_text: Optional[str] = None
+    audio_data: Optional[bytes] = None
     timestamp: float = None
-    status: str = "pending"  # pending, rephrasing, rephrased, displaying, displayed, error
+    status: str = "pending"  # pending, rephrasing, rephrased, tts_generating, tts_complete, displaying, displayed, error
     
     def __post_init__(self):
         if self.timestamp is None:
@@ -41,8 +43,8 @@ class EddiTTSProcessorAsync:
         
         # Queues for async processing
         self.file_to_llm_queue = queue.Queue()      # File monitor -> LLM worker
-        self.llm_to_gui_queue = queue.Queue()       # LLM worker -> GUI worker
-        self.llm_to_tts_queue = queue.Queue()       # LLM worker -> TTS worker (future)
+        self.llm_to_tts_queue = queue.Queue()       # LLM worker -> TTS worker
+        self.tts_to_audio_queue = queue.Queue()     # TTS worker -> Audio worker (for coordinated playback)
         
         # Worker threads
         self.workers = []
@@ -78,6 +80,17 @@ class EddiTTSProcessorAsync:
                 print("Continuing without TTS...")
                 self.tts_client = None
         
+        # Initialize Audio Player for TTS playback
+        self.audio_player = None
+        if self.tts_client:
+            try:
+                self.audio_player = AudioPlayer(self.config)
+                print(f"Audio Player initialized: {self.audio_player.default_device['name'] if self.audio_player.default_device else 'No device'}")
+            except Exception as e:
+                print(f"Audio Player initialization failed: {e}")
+                print("TTS audio will be saved but not played...")
+                self.audio_player = None
+        
         # Load system prompt
         self.system_prompt = self.load_system_prompt()
         
@@ -97,6 +110,11 @@ class EddiTTSProcessorAsync:
             print(f"GUI: Enabled")
         if self.tts_client:
             print(f"TTS: Enabled ({self.tts_client.base_url})")
+            if self.audio_player:
+                device_name = self.audio_player.default_device['name'] if self.audio_player.default_device else 'Unknown'
+                print(f"Audio: Enabled ({device_name})")
+            else:
+                print(f"Audio: Disabled (TTS files will be saved only)")
         else:
             print(f"TTS: Disabled")
         print("-" * 50)
@@ -309,10 +327,7 @@ class EddiTTSProcessorAsync:
                 
                 print(f"✨ [{message.id}] Rephrased in {api_time:.2f}s: {message.rephrased_text}")
                 
-                # Add to GUI queue
-                self.llm_to_gui_queue.put(message)
-                
-                # Add to TTS queue for future use
+                # Add to TTS queue for audio generation
                 self.llm_to_tts_queue.put(message)
                 
                 # Log the message
@@ -329,39 +344,72 @@ class EddiTTSProcessorAsync:
         
         print("🧠 LLM worker stopped")
     
-    def process_gui_queue(self):
-        """Process GUI queue in main thread (called from main loop)"""
+    def process_audio_gui_queue(self):
+        """Process audio and GUI coordination queue in main thread"""
         if not self.gui:
             return
         
-        # Process all pending GUI messages (non-blocking)
+        # Process all pending audio+GUI messages (non-blocking)
         while True:
             try:
-                message = self.llm_to_gui_queue.get_nowait()
+                message = self.tts_to_audio_queue.get_nowait()
                 
-                print(f"🖥️ [{message.id}] Displaying message...")
-                message.status = "displaying"
+                if message.audio_data and self.audio_player:
+                    # Coordinated audio + GUI playback
+                    print(f"🔊🖥️ [{message.id}] Starting coordinated audio + GUI display")
+                    
+                    # Get audio duration for better GUI timing coordination
+                    audio_info = self.audio_player.get_audio_info(message.audio_data)
+                    audio_duration_ms = int(audio_info.get('duration', 0) * 1000) if audio_info else None
+                    
+                    # Start GUI display immediately (in main thread)
+                    print(f"🖥️ [{message.id}] Starting GUI display")
+                    message.status = "displaying"
+                    self.gui.display_message(message.rephrased_text, audio_duration_ms)
+                    
+                    def on_audio_start():
+                        """Called when audio playback starts"""
+                        print(f"🔊 [{message.id}] Audio playback started")
+                    
+                    def on_audio_complete():
+                        """Called when audio playback completes"""
+                        print(f"🔊 [{message.id}] Audio playback completed")
+                    
+                    # Play audio asynchronously (non-blocking) so GUI can animate smoothly
+                    audio_thread = self.audio_player.play_audio_async(
+                        message.audio_data,
+                        on_start=on_audio_start,
+                        on_complete=on_audio_complete
+                    )
+                    
+                    # Wait for GUI animation to complete
+                    self.gui.wait()
+                    message.status = "displayed"
+                    print(f"🖥️ [{message.id}] Display complete")
+                    
+                    # Ensure audio finishes before processing next message
+                    audio_thread.join()
                 
-                # Display in GUI - this will block until the entire animation sequence is complete
-                # The ImprovedGui.display_message() starts the animation and returns immediately
-                # Then gui.wait() blocks until all animations (fade-in, typing, display, fade-out) complete
-                self.gui.display_message(message.rephrased_text)
-                self.gui.wait()  # This blocks until the full display cycle is done
-                
-                message.status = "displayed"
-                print(f"🖥️ [{message.id}] Display complete")
+                else:
+                    # No audio or no audio player - display GUI immediately
+                    print(f"🖥️ [{message.id}] No audio - displaying GUI immediately")
+                    message.status = "displaying"
+                    self.gui.display_message(message.rephrased_text)
+                    self.gui.wait()
+                    message.status = "displayed"
+                    print(f"🖥️ [{message.id}] Display complete")
                 
                 # Mark task as done
-                self.llm_to_gui_queue.task_done()
+                self.tts_to_audio_queue.task_done()
                 
             except queue.Empty:
                 # No more messages to process
                 break
             except Exception as e:
-                print(f"Error processing GUI queue: {e}")
+                print(f"Error processing audio/GUI queue: {e}")
                 if 'message' in locals():
                     message.status = "error"
-                    self.llm_to_gui_queue.task_done()
+                    self.tts_to_audio_queue.task_done()
     
     def tts_worker(self):
         """Worker thread that handles TTS processing"""
@@ -380,6 +428,7 @@ class EddiTTSProcessorAsync:
                     continue
                 
                 print(f"🔊 [{message.id}] Starting TTS generation...")
+                message.status = "tts_generating"
                 
                 # Get TTS configuration
                 tts_config = self.config.get("tts", {})
@@ -397,22 +446,33 @@ class EddiTTSProcessorAsync:
                     tts_time = time.time() - start_time
                     
                     if response.status == "completed" and response.audio_data:
-                        # Save audio file
+                        # Store audio data in message
+                        message.audio_data = response.audio_data
+                        message.status = "tts_complete"
+                        
+                        # Optionally save audio file for debugging
                         audio_filename = f"tmp/tts_{message.id}.wav"
                         os.makedirs("tmp", exist_ok=True)
                         self.tts_client.save_audio_to_file(response.audio_data, audio_filename)
                         
                         audio_size_kb = len(response.audio_data) / 1024
-                        print(f"🔊 [{message.id}] TTS completed in {tts_time:.2f}s - {audio_size_kb:.1f}KB saved to {audio_filename}")
+                        print(f"🔊 [{message.id}] TTS completed in {tts_time:.2f}s - {audio_size_kb:.1f}KB")
                         
-                        # TODO: In future, could play the audio here or add to audio playback queue
-                        # TODO: Could also calculate actual audio duration and update GUI timing
+                        # Add to audio playback queue
+                        self.tts_to_audio_queue.put(message)
                         
                     else:
                         print(f"🔊 [{message.id}] TTS generation failed: {response.error_message}")
+                        message.status = "error"
+                        
+                        # Still send to audio queue for GUI-only display
+                        self.tts_to_audio_queue.put(message)
                     
                 except Exception as e:
                     print(f"🔊 [{message.id}] TTS generation failed: {e}")
+                    message.status = "error"
+                    # Send to audio queue for GUI-only display
+                    self.tts_to_audio_queue.put(message)
                 
                 # Mark task as done
                 self.llm_to_tts_queue.task_done()
@@ -444,7 +504,7 @@ class EddiTTSProcessorAsync:
         
         print(f"✅ Started {len(self.workers)} worker threads")
         if self.gui:
-            print("🖥️ GUI processing will run in main thread")
+            print("🖥️ Audio/GUI coordination will run in main thread")
     
     def stop_workers(self):
         """Stop all worker threads"""
@@ -461,6 +521,10 @@ class EddiTTSProcessorAsync:
         if self.tts_client:
             self.tts_client.close()
         
+        # Clean up audio player
+        if self.audio_player:
+            self.audio_player.close()
+        
         print("✅ All workers stopped")
     
     def run(self) -> None:
@@ -476,12 +540,12 @@ class EddiTTSProcessorAsync:
             # Start worker threads
             self.start_workers()
             
-            # Main loop - process GUI events and handle GUI queue in main thread
+            # Main loop - process audio/GUI coordination in main thread
             while True:
-                # Process any pending GUI messages (if GUI is enabled)
+                # Process any pending audio+GUI messages (if GUI is enabled)
                 if self.gui:
-                    # Process GUI queue in main thread
-                    self.process_gui_queue()
+                    # Process audio/GUI coordination queue in main thread
+                    self.process_audio_gui_queue()
                     # Process GUI events to keep it responsive
                     self.gui.sleep(50)  # 50ms - faster processing for responsiveness
                 else:

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 from modules.llmbackend import LlmBackend
 from modules.TTSClient import VibeVoiceTTSClient
+from modules.AudioPlayer import AudioPlayer
 
 
 class EddiTTSProcessor:
@@ -43,6 +44,17 @@ class EddiTTSProcessor:
                 print("Continuing without TTS...")
                 self.tts_client = None
         
+        # Initialize Audio Player for TTS playback
+        self.audio_player = None
+        if self.tts_client:
+            try:
+                self.audio_player = AudioPlayer(self.config)
+                print(f"Audio Player initialized: {self.audio_player.default_device['name'] if self.audio_player.default_device else 'No device'}")
+            except Exception as e:
+                print(f"Audio Player initialization failed: {e}")
+                print("TTS audio will be saved but not played...")
+                self.audio_player = None
+        
         # Load system prompt
         self.system_prompt = self.load_system_prompt()
         
@@ -62,6 +74,11 @@ class EddiTTSProcessor:
             print(f"GUI: Enabled")
         if self.tts_client:
             print(f"TTS: Enabled ({self.tts_client.base_url})")
+            if self.audio_player:
+                device_name = self.audio_player.default_device['name'] if self.audio_player.default_device else 'Unknown'
+                print(f"Audio: Enabled ({device_name})")
+            else:
+                print(f"Audio: Disabled (TTS files will be saved only)")
         else:
             print(f"TTS: Disabled")
         print("-" * 50)
@@ -219,7 +236,7 @@ class EddiTTSProcessor:
             print("Using original text.")
             return text
     
-    def generate_tts_audio(self, text: str, message_id: str = None) -> Optional[str]:
+    def generate_tts_audio(self, text: str, message_id: str = None) -> Optional[bytes]:
         """
         Generate TTS audio for the given text
         
@@ -228,7 +245,7 @@ class EddiTTSProcessor:
             message_id: Optional message ID for file naming
             
         Returns:
-            Path to saved audio file if successful, None otherwise
+            Audio data as bytes if successful, None otherwise
         """
         if not self.tts_client:
             return None
@@ -252,19 +269,16 @@ class EddiTTSProcessor:
             tts_time = time.time() - start_time
             
             if response.status == "completed" and response.audio_data:
-                # Save audio file
+                # Optionally save audio file for debugging
                 if message_id:
                     audio_filename = f"tmp/tts_{message_id}.wav"
-                else:
-                    audio_filename = f"tmp/tts_{int(time.time())}.wav"
-                
-                os.makedirs("tmp", exist_ok=True)
-                self.tts_client.save_audio_to_file(response.audio_data, audio_filename)
+                    os.makedirs("tmp", exist_ok=True)
+                    self.tts_client.save_audio_to_file(response.audio_data, audio_filename)
                 
                 audio_size_kb = len(response.audio_data) / 1024
                 print(f"{tts_time:.2f}s ({audio_size_kb:.1f}KB)")
                 
-                return audio_filename
+                return response.audio_data
             else:
                 print(f"failed ({response.error_message})")
                 return None
@@ -306,19 +320,60 @@ class EddiTTSProcessor:
                         print(f"✨ [{message_id}] Rephrased: {rephrased_text}")
                         
                         # Generate TTS audio if enabled
-                        audio_file = None
+                        audio_data = None
                         if self.tts_client:
-                            audio_file = self.generate_tts_audio(rephrased_text, message_id)
+                            audio_data = self.generate_tts_audio(rephrased_text, message_id)
+                        
+                        # Coordinate audio playback with GUI display
+                        if audio_data and self.audio_player and self.gui:
+                            # Play audio and start GUI when audio begins
+                            print(f"🔊 [{message_id}] Starting coordinated audio + GUI display")
+                            
+                            # Get audio duration for better GUI timing coordination
+                            audio_info = self.audio_player.get_audio_info(audio_data)
+                            audio_duration_ms = int(audio_info.get('duration', 0) * 1000) if audio_info else None
+                            
+                            # Start GUI display immediately (in main thread)
+                            print(f"🖥️ [{message_id}] Starting GUI display")
+                            self.gui.display_message(rephrased_text, audio_duration_ms)
+                            
+                            def on_audio_start():
+                                """Called when audio playback starts"""
+                                print(f"🔊 [{message_id}] Audio playback started")
+                            
+                            def on_audio_complete():
+                                """Called when audio playback completes"""
+                                print(f"🔊 [{message_id}] Audio playback completed")
+                            
+                            # Play audio asynchronously (non-blocking) so GUI can animate smoothly
+                            audio_thread = self.audio_player.play_audio_async(
+                                audio_data, 
+                                on_start=on_audio_start,
+                                on_complete=on_audio_complete
+                            )
+                            
+                            # Wait for GUI animation to complete
+                            if self.gui:
+                                self.gui.wait()
+                            
+                            # Ensure audio finishes before processing next message
+                            audio_thread.join()
+                            
+                        elif self.gui:
+                            # No audio - display GUI immediately (fallback behavior)
+                            print(f"🖥️ [{message_id}] No audio - displaying GUI immediately")
+                            self.gui.display_message(rephrased_text)
+                            self.gui.wait()
+                        
+                        elif audio_data and self.audio_player:
+                            # Audio only, no GUI - use async playback to avoid blocking
+                            print(f"🔊 [{message_id}] Playing audio without GUI")
+                            audio_thread = self.audio_player.play_audio_async(audio_data)
+                            # Wait for audio to complete before processing next message
+                            audio_thread.join()
                         
                         total_time = time.time() - start_time
                         print(f"⏱️ [{message_id}] Total time: {total_time:.2f}s")
-                        
-                        # Display in GUI if available
-                        if self.gui:
-                            self.gui.display_message(rephrased_text)
-                            # Wait for the GUI animation to complete
-                            if self.gui:
-                                self.gui.wait()
                         
                         # Log the rephrased message
                         self.log_message(rephrased_text, "assistant")
@@ -351,6 +406,15 @@ class EddiTTSProcessor:
                 
         except KeyboardInterrupt:
             print("\\n\\n🛑 Stopping EddiTTS processor...")
+            
+            # Clean up audio player
+            if self.audio_player:
+                self.audio_player.close()
+            
+            # Clean up TTS client
+            if self.tts_client:
+                self.tts_client.close()
+            
             print(f"Total messages processed: {len(self.messages)}")
             print("Goodbye, Commander! o7")
 
