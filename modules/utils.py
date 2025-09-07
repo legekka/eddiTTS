@@ -1,10 +1,5 @@
-import datetime
 from dataclasses import dataclass
-import json
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from modules.orchestrator import Orchestrator
+from typing import Any, Dict, Optional
 
 
 # OpenAI representation of a tool
