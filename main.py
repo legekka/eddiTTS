@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional
 from modules.llmbackend import LlmBackend
+from modules.TTSClient import VibeVoiceTTSClient
 
 
 class EddiTTSProcessor:
@@ -28,6 +29,20 @@ class EddiTTSProcessor:
             api_key=self.config.get("llm_backend", {}).get("api_key", "valami")
         )
         
+        # Initialize TTS client if enabled
+        self.tts_client = None
+        if self.config.get("tts", {}).get("enabled", False):
+            try:
+                self.tts_client = VibeVoiceTTSClient(
+                    base_url=self.config["tts"].get("base_url", "http://172.16.240.5:8500"),
+                    timeout=self.config["tts"].get("timeout", 30)
+                )
+                print(f"TTS Client initialized: {self.tts_client.base_url}")
+            except Exception as e:
+                print(f"TTS Client initialization failed: {e}")
+                print("Continuing without TTS...")
+                self.tts_client = None
+        
         # Load system prompt
         self.system_prompt = self.load_system_prompt()
         
@@ -45,6 +60,10 @@ class EddiTTSProcessor:
         print(f"Available models: {', '.join(self.llm_backend.list_models())}")
         if self.gui:
             print(f"GUI: Enabled")
+        if self.tts_client:
+            print(f"TTS: Enabled ({self.tts_client.base_url})")
+        else:
+            print(f"TTS: Disabled")
         print("-" * 50)
     
     def init_gui(self) -> None:
@@ -200,6 +219,60 @@ class EddiTTSProcessor:
             print("Using original text.")
             return text
     
+    def generate_tts_audio(self, text: str, message_id: str = None) -> Optional[str]:
+        """
+        Generate TTS audio for the given text
+        
+        Args:
+            text: Text to convert to speech
+            message_id: Optional message ID for file naming
+            
+        Returns:
+            Path to saved audio file if successful, None otherwise
+        """
+        if not self.tts_client:
+            return None
+        
+        try:
+            # Get TTS configuration
+            tts_config = self.config.get("tts", {})
+            voice = tts_config.get("voice", "en-Alice_woman")
+            cfg_scale = tts_config.get("cfg_scale", 1.3)
+            
+            print(f"🔊 TTS generation: ", end="", flush=True)
+            start_time = time.time()
+            
+            # Generate TTS audio
+            response = self.tts_client.generate_speech(
+                text=text,
+                voice=voice,
+                cfg_scale=cfg_scale
+            )
+            
+            tts_time = time.time() - start_time
+            
+            if response.status == "completed" and response.audio_data:
+                # Save audio file
+                if message_id:
+                    audio_filename = f"tmp/tts_{message_id}.wav"
+                else:
+                    audio_filename = f"tmp/tts_{int(time.time())}.wav"
+                
+                os.makedirs("tmp", exist_ok=True)
+                self.tts_client.save_audio_to_file(response.audio_data, audio_filename)
+                
+                audio_size_kb = len(response.audio_data) / 1024
+                print(f"{tts_time:.2f}s ({audio_size_kb:.1f}KB)")
+                
+                return audio_filename
+            else:
+                print(f"failed ({response.error_message})")
+                return None
+                
+        except Exception as e:
+            print(f"failed ({e})")
+            return None
+    
     def check_for_new_lines(self) -> None:
         """Check for new lines in the speechresponder.out file"""
         try:
@@ -223,14 +296,22 @@ class EddiTTSProcessor:
                 for i in range(self.lines_processed, len(lines)):
                     original_text = lines[i].strip()
                     if original_text:  # Skip empty lines
-                        print(f"\\n📤 Original: {original_text}")
+                        message_id = f"msg_{int(time.time())}_{i}"
+                        print(f"\\n📤 [{message_id}] Original: {original_text}")
                         
                         start_time = time.time()
                         rephrased_text = self.rephrase_text(original_text)
-                        total_time = time.time() - start_time
+                        llm_time = time.time() - start_time
                         
-                        print(f"✨ Rephrased: {rephrased_text}")
-                        print(f"⏱️ Total time: {total_time:.2f}s")
+                        print(f"✨ [{message_id}] Rephrased: {rephrased_text}")
+                        
+                        # Generate TTS audio if enabled
+                        audio_file = None
+                        if self.tts_client:
+                            audio_file = self.generate_tts_audio(rephrased_text, message_id)
+                        
+                        total_time = time.time() - start_time
+                        print(f"⏱️ [{message_id}] Total time: {total_time:.2f}s")
                         
                         # Display in GUI if available
                         if self.gui:
@@ -254,6 +335,8 @@ class EddiTTSProcessor:
         print("Press Ctrl+C to stop")
         if self.gui:
             print("💡 GUI is active - messages will be displayed on screen")
+        if self.tts_client:
+            print("🔊 TTS is active - audio files will be generated")
         print("")
         
         try:

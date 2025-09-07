@@ -9,6 +9,7 @@ from dataclasses import dataclass
 import queue
 import threading
 from modules.llmbackend import LlmBackend
+from modules.TTSClient import VibeVoiceTTSClient
 
 
 @dataclass
@@ -63,6 +64,20 @@ class EddiTTSProcessorAsync:
             api_key=self.config.get("llm_backend", {}).get("api_key", "valami")
         )
         
+        # Initialize TTS client if enabled
+        self.tts_client = None
+        if self.config.get("tts", {}).get("enabled", False):
+            try:
+                self.tts_client = VibeVoiceTTSClient(
+                    base_url=self.config["tts"].get("base_url", "http://172.16.240.5:8500"),
+                    timeout=self.config["tts"].get("timeout", 30)
+                )
+                print(f"TTS Client initialized: {self.tts_client.base_url}")
+            except Exception as e:
+                print(f"TTS Client initialization failed: {e}")
+                print("Continuing without TTS...")
+                self.tts_client = None
+        
         # Load system prompt
         self.system_prompt = self.load_system_prompt()
         
@@ -80,6 +95,10 @@ class EddiTTSProcessorAsync:
         print(f"Available models: {', '.join(self.llm_backend.list_models())}")
         if self.gui:
             print(f"GUI: Enabled")
+        if self.tts_client:
+            print(f"TTS: Enabled ({self.tts_client.base_url})")
+        else:
+            print(f"TTS: Disabled")
         print("-" * 50)
     
     def init_gui(self) -> None:
@@ -345,8 +364,12 @@ class EddiTTSProcessorAsync:
                     self.llm_to_gui_queue.task_done()
     
     def tts_worker(self):
-        """Worker thread that will handle TTS processing (future implementation)"""
-        print("🔊 TTS worker started (placeholder)")
+        """Worker thread that handles TTS processing"""
+        if not self.tts_client:
+            print("🔊 TTS worker skipped - TTS not enabled")
+            return
+            
+        print("🔊 TTS worker started")
         
         while self.running:
             try:
@@ -356,24 +379,40 @@ class EddiTTSProcessorAsync:
                 except queue.Empty:
                     continue
                 
-                # Placeholder for TTS processing
-                # In the future, this will:
-                # 1. Send text to TTS API
-                # 2. Get audio file/stream and its duration
-                # 3. Play audio 
-                # 4. Pass audio_duration_ms to GUI for proper timing
-                #    (GUI will use audio duration instead of calculated reading time)
-                # 5. Could also add message to a separate audio queue for playing
+                print(f"🔊 [{message.id}] Starting TTS generation...")
                 
-                print(f"🔊 [{message.id}] TTS placeholder - would process: {message.rephrased_text[:50]}...")
+                # Get TTS configuration
+                tts_config = self.config.get("tts", {})
+                voice = tts_config.get("voice", "en-Alice_woman")
+                cfg_scale = tts_config.get("cfg_scale", 1.3)
                 
-                # Future implementation example:
-                # audio_file, audio_duration_ms = tts_api.generate_speech(message.rephrased_text)
-                # audio_queue.put({"file": audio_file, "duration": audio_duration_ms})
-                # 
-                # If GUI timing needs to be updated based on actual audio:
-                # message.audio_duration = audio_duration_ms
-                # gui_queue.put_priority(message)  # Re-queue with audio timing
+                try:
+                    # Generate TTS audio (synchronous for this API)
+                    start_time = time.time()
+                    response = self.tts_client.generate_speech(
+                        text=message.rephrased_text,
+                        voice=voice,
+                        cfg_scale=cfg_scale
+                    )
+                    tts_time = time.time() - start_time
+                    
+                    if response.status == "completed" and response.audio_data:
+                        # Save audio file
+                        audio_filename = f"tmp/tts_{message.id}.wav"
+                        os.makedirs("tmp", exist_ok=True)
+                        self.tts_client.save_audio_to_file(response.audio_data, audio_filename)
+                        
+                        audio_size_kb = len(response.audio_data) / 1024
+                        print(f"🔊 [{message.id}] TTS completed in {tts_time:.2f}s - {audio_size_kb:.1f}KB saved to {audio_filename}")
+                        
+                        # TODO: In future, could play the audio here or add to audio playback queue
+                        # TODO: Could also calculate actual audio duration and update GUI timing
+                        
+                    else:
+                        print(f"🔊 [{message.id}] TTS generation failed: {response.error_message}")
+                    
+                except Exception as e:
+                    print(f"🔊 [{message.id}] TTS generation failed: {e}")
                 
                 # Mark task as done
                 self.llm_to_tts_queue.task_done()
@@ -417,6 +456,10 @@ class EddiTTSProcessorAsync:
             worker.join(timeout=2.0)
             if worker.is_alive():
                 print(f"⚠️ Worker {worker.name} did not stop gracefully")
+        
+        # Clean up TTS client
+        if self.tts_client:
+            self.tts_client.close()
         
         print("✅ All workers stopped")
     
