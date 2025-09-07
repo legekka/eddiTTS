@@ -1,6 +1,7 @@
 import os
 import time
 import json
+import sys
 from pathlib import Path
 from typing import Dict, List, Optional
 from modules.llmbackend import LlmBackend
@@ -14,6 +15,12 @@ class EddiTTSProcessor:
         self.config = self.load_config(config_path)
         self.messages: List[Dict] = []
         self.lines_processed = 0
+        
+        # Initialize GUI if enabled
+        self.app = None
+        self.gui = None
+        if self.config.get("gui", False):
+            self.init_gui()
         
         # Initialize LLM backend
         self.llm_backend = LlmBackend(
@@ -36,7 +43,38 @@ class EddiTTSProcessor:
         print(f"Monitoring: {self.speechresponder_path}")
         print(f"LLM Backend: {self.llm_backend.base_url}")
         print(f"Available models: {', '.join(self.llm_backend.list_models())}")
+        if self.gui:
+            print(f"GUI: Enabled")
         print("-" * 50)
+    
+    def init_gui(self) -> None:
+        """Initialize the GUI components"""
+        try:
+            from PySide6.QtWidgets import QApplication
+            from modules.Gui import Gui
+            
+            # Create QApplication if it doesn't exist
+            if not QApplication.instance():
+                self.app = QApplication(sys.argv)
+            else:
+                self.app = QApplication.instance()
+            
+            self.gui = Gui()
+            self.gui.show()
+            print("GUI initialized successfully")
+        except Exception as e:
+            print(f"Failed to initialize GUI: {e}")
+            print("Continuing without GUI...")
+            self.config["gui"] = False
+            self.gui = None
+    
+    def calculate_display_duration(self, text: str) -> int:
+        """Calculate how long to display text based on length (in milliseconds)"""
+        # Base duration + time based on text length
+        # Roughly 200ms per word + 2 second base
+        word_count = len(text.split())
+        duration = 2000 + (word_count * 200)
+        return min(duration, 8000)  # Cap at 8 seconds
     
     def load_config(self, config_path: str) -> Dict:
         """Load configuration from JSON file"""
@@ -57,6 +95,7 @@ class EddiTTSProcessor:
         except FileNotFoundError:
             print(f"Config file {config_path} not found. Using default configuration.")
             return {
+                "gui": False,
                 "llm_backend": {
                     "base_url": "http://localhost:11434/v1",
                     "api_key": "valami",
@@ -200,6 +239,15 @@ class EddiTTSProcessor:
                         print(f"✨ Rephrased: {rephrased_text}")
                         print(f"⏱️ Total time: {total_time:.2f}s")
                         
+                        # Display in GUI if available
+                        if self.gui:
+                            display_duration = self.calculate_display_duration(rephrased_text)
+                            print(f"🖥️ Displaying in GUI for {display_duration/1000:.1f}s")
+                            self.gui.display_message(rephrased_text, display_duration)
+                            # Wait for the GUI animation to complete
+                            if self.gui:
+                                self.gui.wait()
+                        
                         # Log the rephrased message
                         self.log_message(rephrased_text, "assistant")
                 
@@ -213,12 +261,19 @@ class EddiTTSProcessor:
         """Main processing loop"""
         print("🚀 Starting EddiTTS processor...")
         print("Press Ctrl+C to stop")
+        if self.gui:
+            print("💡 GUI is active - messages will be displayed on screen")
         print("")
         
         try:
             while True:
                 self.check_for_new_lines()
-                time.sleep(0.5)  # Check every 500ms
+                
+                # Use GUI sleep if available, otherwise regular sleep
+                if self.gui:
+                    self.gui.sleep(250)  # 250ms
+                else:
+                    time.sleep(0.25)
                 
         except KeyboardInterrupt:
             print("\\n\\n🛑 Stopping EddiTTS processor...")
