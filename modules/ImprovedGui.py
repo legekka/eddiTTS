@@ -40,7 +40,8 @@ class ImprovedGui(QWidget):
         self.label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         
         QFontDatabase().addApplicationFont("res/eurstl24.ttf")
-        self.label.setFont(QFontDatabase().font("Eurostile-Roman", "Regular", 18))
+        self.original_font = QFontDatabase().font("Eurostile-Roman", "Regular", 18)
+        self.label.setFont(self.original_font)
 
         self.label.setStyleSheet(
             "color: #0a8bd6; padding: 4px; background-color: transparent;"
@@ -118,13 +119,22 @@ class ImprovedGui(QWidget):
             timing["fade_out_start"] = timing["fade_in_duration"] + effective_content_time + timing["display_duration"]
             timing["total_duration"] = timing["fade_out_start"] + timing["fade_out_duration"]
         
-        # Debug output
-        print(f"📊 GUI Timing: {timing['char_count']} chars, {timing['word_count']} words")
-        print(f"⌨️ Typing: {timing['typing_duration']}ms, 📖 Reading: {timing['reading_duration']:.0f}ms, ⏱️ Effective: {timing['effective_content_time']:.0f}ms")
-        print(f"🌅 Fade out starts: {timing['fade_out_start']:.0f}ms")
+        # Debug output (essential info only)
+        print(f"📊 GUI: {timing['char_count']} chars, {timing['word_count']} words, {timing['effective_content_time']:.0f}ms display")
         
         # setup the event loop to know when the display is done
         self.loop = QEventLoop()
+
+        # Reset font to original size for new message
+        self.label.setFont(self.original_font)
+
+        # Clean up any existing timers
+        if hasattr(self, 'typing_timer'):
+            self.typing_timer.stop()
+            self.typing_timer.deleteLater()
+        if hasattr(self, 'fade_out_timer'):
+            self.fade_out_timer.stop()
+            self.fade_out_timer.deleteLater()
 
         # Update the text message with the new message
         self.label.setText("")
@@ -151,7 +161,6 @@ class ImprovedGui(QWidget):
 
     def fade_out(self, duration=1000):
         """Start fade out animation"""
-        print(f"🌇 Starting fade out ({duration}ms)")
         self.animation.setDuration(duration)
         self.animation.setStartValue(1)
         self.animation.setEndValue(0)
@@ -177,7 +186,6 @@ class ImprovedGui(QWidget):
                 self.label.setFont(font)
         else:
             self.typing_timer.stop()
-            print(f"⌨️ Typing complete")
 
     def wait(self):
         """Wait for all animations to complete"""

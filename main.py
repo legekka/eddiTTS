@@ -165,7 +165,6 @@ class EddiTTSProcessor:
                         "role": "assistant", 
                         "content": msg["text"]
                     })
-                print(f"Using {len(recent_messages)} previous messages as context")
             
             # Add the current message to rephrase
             messages.append({"role": "user", "content": text})
@@ -185,7 +184,9 @@ class EddiTTSProcessor:
             response = self.llm_backend.chat(
                 messages=messages,
                 model=model,
-                reasoning_effort=None
+                reasoning_effort="low",
+                temperature=1,
+                top_p=1,
             )
             
             api_time = time.time() - start_time
@@ -233,7 +234,6 @@ class EddiTTSProcessor:
                         
                         # Display in GUI if available
                         if self.gui:
-                            print(f"🖥️ Displaying in GUI with improved timing")
                             self.gui.display_message(rephrased_text)
                             # Wait for the GUI animation to complete
                             if self.gui:
