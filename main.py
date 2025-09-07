@@ -51,7 +51,7 @@ class EddiTTSProcessor:
         """Initialize the GUI components"""
         try:
             from PySide6.QtWidgets import QApplication
-            from modules.Gui import Gui
+            from modules.ImprovedGui import ImprovedGui
             
             # Create QApplication if it doesn't exist
             if not QApplication.instance():
@@ -59,22 +59,14 @@ class EddiTTSProcessor:
             else:
                 self.app = QApplication.instance()
             
-            self.gui = Gui()
+            self.gui = ImprovedGui()
             self.gui.show()
-            print("GUI initialized successfully")
+            print("Improved GUI initialized successfully")
         except Exception as e:
             print(f"Failed to initialize GUI: {e}")
             print("Continuing without GUI...")
             self.config["gui"] = False
             self.gui = None
-    
-    def calculate_display_duration(self, text: str) -> int:
-        """Calculate how long to display text based on length (in milliseconds)"""
-        # Base duration + time based on text length
-        # Roughly 200ms per word + 2 second base
-        word_count = len(text.split())
-        duration = 2000 + (word_count * 200)
-        return min(duration, 8000)  # Cap at 8 seconds
     
     def load_config(self, config_path: str) -> Dict:
         """Load configuration from JSON file"""
@@ -241,9 +233,8 @@ class EddiTTSProcessor:
                         
                         # Display in GUI if available
                         if self.gui:
-                            display_duration = self.calculate_display_duration(rephrased_text)
-                            print(f"🖥️ Displaying in GUI for {display_duration/1000:.1f}s")
-                            self.gui.display_message(rephrased_text, display_duration)
+                            print(f"🖥️ Displaying in GUI with improved timing")
+                            self.gui.display_message(rephrased_text)
                             # Wait for the GUI animation to complete
                             if self.gui:
                                 self.gui.wait()
